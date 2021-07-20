@@ -53,7 +53,8 @@ class WeibanClient(object):
         pass
 
     def login_manually(self):
-        logger.debug('将下列内容复制到浏览器地址栏并按回车：')
+        logger.warning('在电脑浏览器访问 https://weiban.mycourse.cn，然后选择右侧「账号登录」进行登录')
+        logger.debug('登录后将下列内容复制到浏览器地址栏并按回车：')
         print('javascript:(function(){data=JSON.parse(localStorage.user);prompt(\'\',JSON.stringify({token:data['
               '\'token\'],userId:data[\'userId\'], tenantCode:data[\'tenantCode\']}));})();')
         logger.warning('（注意某些浏览器会把开头的“javascript:”吞掉，如果粘贴后发现没有请自行补上）')
@@ -172,8 +173,7 @@ class WeibanClient(object):
 
 
 def main():
-    logger.warning('使用说明：在电脑浏览器访问 https://weiban.mycourse.cn，然后选择右侧「账号登录」进行登录')
-    logger.debug('登录后先完成初始的 10 题考试（如果没有请自动忽略）')
+    logger.warning('登录后先完成初始的 10 题考试（如果没有请自动忽略）')
     logger.info('按回车键继续...'), input()
 
     logger.debug('请选择登录方式：')
