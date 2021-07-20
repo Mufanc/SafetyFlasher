@@ -6,7 +6,7 @@ from random import randint
 from time import time, sleep
 
 logger.remove()
-logger.add(sys.stdout, format='<level>[*] {message}</level>')
+logger.add(sys.stdout, format='<level>[{time:HH:MM:SS}] {message}</level>')
 
 
 def timestamp():
@@ -22,6 +22,7 @@ class WeibanClient(object):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/93.0.4544.0 Safari/537.36'
         })
+        self.last_choice = {}
 
     def post(self, url, data={}):
         return self.session.post(url, params={'timestamp': timestamp()}, data={
@@ -55,13 +56,13 @@ class WeibanClient(object):
             'userProjectId': user_project_id,
             'courseId': resource_id
         })
-        logger.debug(f'study.do -> {result}')
+        logger.info(f'study.do -> {result}')
         course_url = self.post('https://weiban.mycourse.cn/pharos/usercourse/getCourseUrl.do', data={
             'userProjectId': user_project_id,
             'courseId': resource_id
         })['data']
-        logger.debug(f'getCourseUrl.do -> {result}')
-        logger.debug(f'getting... -> {self.session.get(course_url).status_code}')
+        logger.info(f'getCourseUrl.do -> {result}')
+        logger.info(f'getting... -> {self.session.get(course_url).status_code}')
 
     def send_finish(self, user_course_id):
         return self.session.post(
@@ -72,15 +73,33 @@ class WeibanClient(object):
             }
         ).content.decode()
 
+    def show_progress(self, user_project_id):
+        return self.post('https://weiban.mycourse.cn/pharos/project/showProgress.do', {
+            'userProjectId': user_project_id
+        })['data']
+
+    def optional_finished(self, user_project_id):
+        progress = self.show_progress(user_project_id)
+        return progress['optionalFinishedNum'] >= progress['optionalNum']
+
     def flash(self):
         tasks = self.list_study_task()
         logger.debug('发现课程列表：')
         for i, task in enumerate(tasks):
             logger.info(f'{i+1: >2d}: {task["projectName"]}')
-        index = int(input('输入要刷的课程序号：')) - 1
+        if len(tasks) > 1:
+            if 'index' in self.last_choice:
+                index = self.last_choice['index']
+            else:
+                index = int(input('输入要刷的课程序号：')) - 1
+                self.last_choice['index'] = index
+        else:
+            index = 0
         task = tasks[index]
         logger.debug(f'已选择：{task["projectName"]} [id:{task["userProjectId"]}]')
-        logger.warning('按回车键开始刷课...'), input()
+        if '-y' not in self.last_choice:
+            logger.warning('确认开始刷课吗？'), input()
+            self.last_choice['-y'] = True
         categories = self.list_category(task['userProjectId'])
         for T, name in enumerate(('必修课程', '匹配课程', '自选课程')):
             logger.debug(f'获取到任务列表 [{name}]：')
@@ -92,21 +111,27 @@ class WeibanClient(object):
             if not categories_to_flash:
                 logger.warning('该课程已完成，跳过')
                 continue
+            if name == '自选课程' and self.optional_finished(task['userProjectId']):
+                logger.warning('自选课程已完成！')
+                continue
             for cat in categories_to_flash:
                 logger.warning(f'正在刷课：{name} -> {cat["categoryName"]}')
                 courses = self.list_courses(task['userProjectId'], cat['categoryCode'], (3, 1, 2)[T])
                 for i, course in enumerate(courses):
-                    logger.info(f'{i+1: >2d}: {course["resourceName"]}')
+                    logger.debug(f'{i+1: >2d}: {course["resourceName"]}')
                     if course['finished'] == 1:
                         logger.debug('该项已完成，跳过')
                         continue
                     self.start_study(task['userProjectId'], course['resourceId'])
                     wait = randint(10, 20)
-                    logger.debug(f'随机等待 {wait} 秒...')
+                    logger.warning(f'随机等待 {wait} 秒...')
                     sleep(wait)
-                    logger.warning(f'Finishing... -> {self.send_finish(course["userCourseId"])}')
+                    logger.debug(f'Finishing... -> {self.send_finish(course["userCourseId"])}')
                     logger.debug('3 秒后继续下一课程')
                     sleep(3)
+        progress = self.show_progress(task['userProjectId'])
+        logger.debug('必修课程：[{requiredFinishedNum}/{requiredNum}] | 匹配课程：[{pushFinishedNum}/{pushNum}] | 自选课程：[{'
+                     'optionalFinishedNum}/{optionalNum}]'.format(**progress))
         logger.warning('全部课程刷课完毕！')
         input()
 
@@ -120,11 +145,22 @@ def main():
           '\'token\'],userId:data[\'userId\'], tenantCode:data[\'tenantCode\']}));})();')
     logger.warning('（注意某些浏览器会把开头的“javascript:”吞掉，如果粘贴后发现没有请自行补上）')
     userinfo = json.loads(input('把弹窗显示的内容粘贴到这里：'))
-    try:
-        WeibanClient(userinfo).flash()
-    except Exception as err:
-        logger.error(err)
+
+    client = WeibanClient(userinfo)
+    for trial in range(10):
+        try:
+            client.flash()
+            break
+        except Exception as err:
+            logger.error(repr(err))
+            logger.warning('发生错误，5 秒后重试')
+            sleep(5)
+    else:
+        logger.error('重试次数过多！')
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning('Exiting...')
