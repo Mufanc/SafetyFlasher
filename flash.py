@@ -29,8 +29,51 @@ class WeibanClient(object):
             **data
         }).json()
 
+    def list_study_task(self):
+        return self.post('https://weiban.mycourse.cn/pharos/index/listStudyTask.do')['data']
+
+    def list_category(self, user_project_id):
+        categories = []
+        for T in (3, 1, 2):
+            result = self.post('https://weiban.mycourse.cn/pharos/usercourse/listCategory.do', data={
+                'userProjectId': user_project_id,
+                'chooseType': T
+            })['data']
+            categories.append(result)
+        return categories
+
+    def list_courses(self, user_project_id, category_code, choose_type):
+        return self.post('https://weiban.mycourse.cn/pharos/usercourse/listCourse.do', {
+            'userProjectId': user_project_id,
+            'categoryCode': category_code,
+            'chooseType': choose_type,
+            'name': ''
+        })['data']
+
+    def start_study(self, user_project_id, resource_id):
+        result = self.post('https://weiban.mycourse.cn/pharos/usercourse/study.do', {
+            'userProjectId': user_project_id,
+            'courseId': resource_id
+        })
+        logger.debug(f'study.do -> {result}')
+        course_url = self.post('https://weiban.mycourse.cn/pharos/usercourse/getCourseUrl.do', data={
+            'userProjectId': user_project_id,
+            'courseId': resource_id
+        })['data']
+        logger.debug(f'getCourseUrl.do -> {result}')
+        logger.debug(f'getting... -> {self.session.get(course_url).status_code}')
+
+    def send_finish(self, user_course_id):
+        return self.session.post(
+            'https://weiban.mycourse.cn/pharos/usercourse/finish.do', {
+                '_': timestamp(),
+                'userCourseId': user_course_id,
+                'tenantCode': self.userinfo['tenantCode']
+            }
+        ).content.decode()
+
     def flash(self):
-        tasks = self.post('https://weiban.mycourse.cn/pharos/index/listStudyTask.do')['data']
+        tasks = self.list_study_task()
         logger.debug('发现课程列表：')
         for i, task in enumerate(tasks):
             logger.info(f'{i+1: >2d}: {task["projectName"]}')
@@ -38,54 +81,34 @@ class WeibanClient(object):
         task = tasks[index]
         logger.debug(f'已选择：{task["projectName"]} [id:{task["userProjectId"]}]')
         logger.warning('按回车键开始刷课...'), input()
-        categories = self.post('https://weiban.mycourse.cn/pharos/usercourse/listCategory.do', data={
-            'userProjectId': task['userProjectId'],
-            'chooseType': 3
-        })['data']
-        logger.debug('获取到任务列表：')
-        categories_to_flash = []
-        for i, cat in enumerate(categories):
-            logger.info(f'{i+1: >2d}: {cat["categoryName"]} | 已完成：{cat["finishedNum"]}/{cat["totalNum"]}')
-            if cat["finishedNum"] < cat["totalNum"]:
-                categories_to_flash.append(cat)
-        for cat in categories_to_flash:
-            logger.warning(f'正在刷课：{cat["categoryName"]}')
-            courses = self.post('https://weiban.mycourse.cn/pharos/usercourse/listCourse.do', {
-                'userProjectId': task['userProjectId'],
-                'categoryCode': cat['categoryCode'],
-                'chooseType': 3,
-                'name': ''
-            })['data']
-            for i, course in enumerate(courses):
-                logger.info(f'{i+1: >2d}: {course["resourceName"]}')
-                if course['finished'] == 1:
-                    logger.debug('该项已完成，跳过')
-                    continue
-                result = self.post('https://weiban.mycourse.cn/pharos/usercourse/study.do', {
-                    'userProjectId': task['userProjectId'],
-                    'courseId': course['resourceId']
-                })
-                logger.debug(f'study.do -> {result}')
-                course_url = self.post('https://weiban.mycourse.cn/pharos/usercourse/getCourseUrl.do', data={
-                    'userProjectId': task['userProjectId'],
-                    'courseId': course['resourceId']
-                })['data']
-                logger.debug(f'getCourseUrl.do -> {result}')
-                logger.debug(f'getting... -> {self.session.get(course_url).status_code}')
-                wait = randint(10, 20)
-                logger.debug(f'随机等待 {wait} 秒...')
-                sleep(wait)
-                result = self.session.post(
-                    'https://weiban.mycourse.cn/pharos/usercourse/finish.do', {
-                        '_': timestamp(),
-                        'userCourseId': course['userCourseId'],
-                        'tenantCode': self.userinfo['tenantCode']
-                    }
-                ).content.decode()
-                logger.warning(f'Finishing... -> {result}')
-                logger.debug('3 秒后继续下一课程')
-                sleep(3)
+        categories = self.list_category(task['userProjectId'])
+        for T, name in enumerate(('必修课程', '匹配课程', '自选课程')):
+            logger.debug(f'获取到任务列表 [{name}]：')
+            categories_to_flash = []
+            for i, cat in enumerate(categories[T]):
+                logger.info(f'{i+1: >2d}: {cat["categoryName"]} | 已完成：{cat["finishedNum"]}/{cat["totalNum"]}')
+                if cat["finishedNum"] < cat["totalNum"]:
+                    categories_to_flash.append(cat)
+            if not categories_to_flash:
+                logger.warning('该课程已完成，跳过')
+                continue
+            for cat in categories_to_flash:
+                logger.warning(f'正在刷课：{name} -> {cat["categoryName"]}')
+                courses = self.list_courses(task['userProjectId'], cat['categoryCode'], (3, 1, 2)[T])
+                for i, course in enumerate(courses):
+                    logger.info(f'{i+1: >2d}: {course["resourceName"]}')
+                    if course['finished'] == 1:
+                        logger.debug('该项已完成，跳过')
+                        continue
+                    self.start_study(task['userProjectId'], course['resourceId'])
+                    wait = randint(10, 20)
+                    logger.debug(f'随机等待 {wait} 秒...')
+                    sleep(wait)
+                    logger.warning(f'Finishing... -> {self.send_finish(course["userCourseId"])}')
+                    logger.debug('3 秒后继续下一课程')
+                    sleep(3)
         logger.warning('全部课程刷课完毕！')
+        input()
 
 
 def main():
