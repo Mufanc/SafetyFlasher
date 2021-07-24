@@ -1,12 +1,16 @@
-import sys
 import json
-import requests
+import sys
 import tkinter as tk
 from io import BytesIO
-from loguru import logger
 from random import randint
 from time import time, sleep
+
+import requests
 from PIL import Image, ImageTk
+from loguru import logger
+
+from captcha import detect
+from crypto import encrypt
 
 logger.remove()
 logger.add(sys.stdout, format='<level>[{time:HH:MM:SS}] {message}</level>')
@@ -49,8 +53,46 @@ class WeibanClient(object):
         self.userinfo = {key: result[key] for key in result if key in ('token', 'userId', 'tenantCode')}
         logger.warning('登录成功！')
 
-    def login_with_password(self):
-        pass
+    def login_with_password(self, tenant, username, password):
+        tenant_list = self.session.get('https://weiban.mycourse.cn/pharos/login/getTenantList.do', params={
+            'timestamp': timestamp()
+        }).json()['data']
+        tenant_code = ''
+        for item in tenant_list:
+            if item['name'] == tenant:
+                tenant_code = item['code']
+                break
+        else:
+            logger.error('暂无此学校/社区的信息！')
+            exit()
+        for trial in range(10):
+            captcha = self.session.get('https://weiban.mycourse.cn/pharos/login/randImage.do', params={
+                'time': timestamp()
+            })
+            verify_code = detect(captcha.content)
+            data = encrypt('xie2gg', json.dumps({
+                'keyNumber': username,
+                'password': password,
+                'tenantCode': tenant_code,
+                'time': timestamp(),
+                'verifyCode': verify_code
+            }))
+            result = self.post('https://weiban.mycourse.cn/pharos/login/login.do', {
+                'data': data
+            })
+            if result['code'] == '0':
+                result = result['data']
+                self.userinfo = {key: result[key] for key in result if key in ('token', 'userId', 'tenantCode')}
+                logger.warning('登录成功！')
+                break
+            elif result['code'] == '-1' and result['detailCode'] == '67':
+                logger.warning('验证码错误，即将重新识别')
+            else:
+                logger.error(f'未知错误：{result}')
+                exit()
+        else:
+            logger.error('尝试次数过多')
+            exit()
 
     def login_manually(self):
         logger.warning('在电脑浏览器访问 https://weiban.mycourse.cn，然后选择右侧「账号登录」进行登录')
@@ -173,20 +215,25 @@ class WeibanClient(object):
 
 
 def main():
-    logger.warning('登录后先完成初始的 10 题考试（如果没有请自动忽略）')
+    logger.warning('登录后请先完成初始测试，否则可能产生意料之外的后果（如果没有请自动忽略）')
     logger.info('按回车键继续...'), input()
 
     logger.debug('请选择登录方式：')
-    for i, method in enumerate(('扫码登录（默认）', '手动登录')):
+    for i, method in enumerate(('扫码登录（默认）', '账号密码登录', '手动登录')):
         logger.info(f'{i+1}: {method}')
     client = WeibanClient()
     method = int(input() or '1')
     if method == 1:
         client.login_with_qrcode()
     elif method == 2:
+        tenant = input('请输入学校/社区名称：')
+        username = input('用户名：')
+        password = input('密码：')
+        client.login_with_password(tenant, username, password)
+    elif method == 3:
         client.login_manually()
     else:
-        logger.error('What?')
+        logger.error('请输入正确的序号！')
         exit()
     for trial in range(10):
         try:
@@ -203,7 +250,8 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
+    except Exception as error:
+        logger.error(repr(error))
         logger.warning('Exiting...')
     except KeyboardInterrupt:
         logger.warning('Exiting...')
